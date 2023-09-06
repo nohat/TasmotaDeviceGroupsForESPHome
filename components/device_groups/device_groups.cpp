@@ -5,9 +5,10 @@
 #include "esphome/components/network/util.h"
 #include "esphome/components/globals/globals_component.h"
 
+namespace esphome {
+
 extern globals::GlobalsComponent<int> *dimmer_action; // Declare extern variable
 
-namespace esphome {
 namespace device_groups {
 
 static const char *const TAG = "dgr";
