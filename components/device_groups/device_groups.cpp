@@ -3,6 +3,9 @@
 #include "esphome/core/log.h"
 #include "esphome/components/network/ip_address.h"
 #include "esphome/components/network/util.h"
+#include "esphome/components/globals/globals.h"
+
+extern globals::GlobalsComponent<int> *dimmer_action; // Declare extern variable
 
 namespace esphome {
 namespace device_groups {
