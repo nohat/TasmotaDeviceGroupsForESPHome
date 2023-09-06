@@ -73,7 +73,7 @@ void device_groups::setup() {
       //  SendDeviceGroupMessage(0, (DevGroupMessageType) (DGR_MSGTYP_UPDATE_MORE_TO_COME + DGR_MSGTYPFLAG_WITH_LOCAL),
       //                         DGR_ITEM_LIGHT_CHANNELS, light_channels);
       // }
-      auto flags = (DevGroupMessageType) (DGR_MSGTYPFLAG_WITH_LOCAL)
+      auto flags = (DevGroupMessageType) (DGR_MSGTYPFLAG_WITH_LOCAL);
       flags += (dimmer_action->value() == 0) ? DGR_MSGTYP_UPDATE : DGR_MSGTYP_UPDATE_MORE_TO_COME;
       SendDeviceGroupMessage(0, flags, DGR_ITEM_LIGHT_BRI, (uint8_t) (obj->remote_values.get_brightness() * 255));
     });
