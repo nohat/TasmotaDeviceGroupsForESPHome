@@ -67,6 +67,7 @@ void device_groups::setup() {
   for (light::LightState *obj : this->lights_) {
     obj->add_new_remote_values_callback([this, obj]() {
       DevGroupMessageType flags = DGR_MSGTYPFLAG_WITH_LOCAL + (dimmer_action->value() == 0) ? DGR_MSGTYP_UPDATE : DGR_MSGTYP_UPDATE_MORE_TO_COME;
+      ESP_LOGD(TAG, "message, 0x%02x flags: 0x%04x, item: 0x%02x, value: 0x%02x", 0, flags, DGR_ITEM_LIGHT_BRI, (uint8_t) (obj->remote_values.get_brightness() * 255)); 
       SendDeviceGroupMessage(0, flags, DGR_ITEM_LIGHT_BRI, (uint8_t) (obj->remote_values.get_brightness() * 255));
     });
   }
