@@ -53,18 +53,21 @@ void device_groups::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Device Groups Component for group %s", this->device_group_name_.c_str());
 
   std::string registered_group_name = this->device_group_name_;
+#if defined(ESP8266)
   registered_group_names.push_back(registered_group_name);
+#endif
 
 #ifdef USE_SWITCH
   for (switch_::Switch *obj : this->switches_) {
     obj->add_on_state_callback([this, obj](bool state) {
-      SendDeviceGroupMessage(0, (DevGroupMessageType) (DGR_MSGTYP_UPDATE + DGR_MSGTYPFLAG_WITH_LOCAL), DGR_ITEM_POWER,
-                             state);
+      ExecuteCommandPower(1, state, SRC_SWITCH);
     });
   }
 #endif
 #ifdef USE_LIGHT
   for (light::LightState *obj : this->lights_) {
+    set_light_intial_values(obj);
+
     obj->add_new_remote_values_callback([this, obj]() {
       DevGroupMessageType flags = DGR_MSGTYPFLAG_WITH_LOCAL + (dimmer_action->value() == 0) ? DGR_MSGTYP_UPDATE : DGR_MSGTYP_UPDATE_MORE_TO_COME;
       ESP_LOGD(TAG, "message, 0x%02x flags: 0x%04x, item: 0x%02x, value: 0x%02x", 0, flags, DGR_ITEM_LIGHT_BRI, (uint8_t) (obj->remote_values.get_brightness() * 255)); 
@@ -73,6 +76,60 @@ void device_groups::setup() {
   }
 #endif
 }
+
+#ifdef USE_LIGHT
+void device_groups::get_light_values(light::LightState *obj, bool &power_state, float &brightness, float &red, float &green, float &blue, float &cold_white, float &warm_white, esphome::light::ColorMode &color_mode) {
+  power_state = obj->remote_values.is_on();
+  brightness = obj->remote_values.get_brightness();
+
+  if (obj->get_traits().supports_color_capability(light::ColorCapability::COLOR_TEMPERATURE)) {
+    float min_mireds = 0.0f, max_mireds = 0.0f, color_temperature = 0.0f;
+    color_temperature = obj->remote_values.get_color_temperature();
+    min_mireds = obj->get_traits().get_min_mireds();
+    max_mireds = obj->get_traits().get_max_mireds();
+    warm_white = (color_temperature - min_mireds) / (max_mireds - min_mireds);
+    cold_white = 1.0f - warm_white;
+  } else if (obj->get_traits().supports_color_capability(light::ColorCapability::COLD_WARM_WHITE)) {
+    cold_white = obj->remote_values.get_cold_white();
+    warm_white = obj->remote_values.get_warm_white();
+  } else if (obj->get_traits().supports_color_capability(light::ColorCapability::WHITE)) {
+    warm_white = cold_white = obj->remote_values.get_white();
+  }
+  
+  if (obj->get_traits().supports_color_capability(light::ColorCapability::RGB)) {
+    red = obj->remote_values.get_red();
+    green = obj->remote_values.get_green();
+    blue = obj->remote_values.get_blue();
+  }
+  
+  color_mode = obj->remote_values.get_color_mode();
+
+  if (color_mode & light::ColorCapability::RGB) {
+    cold_white = warm_white = 0;
+  } else if (color_mode & light::ColorCapability::WHITE
+            || color_mode & light::ColorCapability::COLOR_TEMPERATURE
+            || color_mode & light::ColorCapability::COLD_WARM_WHITE) {
+    red = green = blue = 0;
+  }
+}
+
+void device_groups::set_light_intial_values(light::LightState *obj) {
+  bool power_state;
+  float brightness, red, green, blue, cold_white, warm_white;
+  esphome::light::ColorMode color_mode = esphome::light::ColorMode::UNKNOWN;
+  get_light_values(obj, power_state, brightness, red, green, blue, cold_white, warm_white, color_mode);
+
+  previous_power_state = power_state;
+  previous_brightness = brightness;
+  previous_red = red;
+  previous_green = green;
+  previous_blue = blue;
+  previous_cold_white = cold_white;
+  previous_warm_white = warm_white;
+  previous_color_mode = color_mode;
+}
+#endif
+
 void device_groups::dump_config() {
   ESP_LOGCONFIG(TAG, "Device Group %s configuration:", this->device_group_name_.c_str());
   ESP_LOGCONFIG(TAG, " - Send Mask: 0x%08x", send_mask_);
@@ -522,37 +579,107 @@ void device_groups::SendReceiveDeviceGroupMessage(struct device_group *device_gr
               const float red = (uint8_t) XdrvMailbox.data[0] / 255.0f;
               const float green = (uint8_t) XdrvMailbox.data[1] / 255.0f;
               const float blue = (uint8_t) XdrvMailbox.data[2] / 255.0f;
-              const float coldwhite = (uint8_t) XdrvMailbox.data[3] / 255.0f;
-              const float warmwhite = (uint8_t) XdrvMailbox.data[4] / 255.0f;
+              const float cold_white = (uint8_t) XdrvMailbox.data[3] / 255.0f;
+              const float warm_white = (uint8_t) XdrvMailbox.data[4] / 255.0f;
               const bool has_rgb = red + green + blue > 0.0f;
-              const bool has_white = coldwhite + warmwhite > 0.0f;
+              const bool has_white = cold_white + warm_white > 0.0f;
 
-              if (color_modes.count(esphome::light::ColorMode::RGB_COLOR_TEMPERATURE) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::RGB_COLOR_TEMPERATURE);
-              } else if (color_modes.count(esphome::light::ColorMode::RGB_COLD_WARM_WHITE) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::RGB_COLD_WARM_WHITE);
-              } else if (has_white && !has_rgb && color_modes.count(esphome::light::ColorMode::COLOR_TEMPERATURE) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::COLOR_TEMPERATURE);
-              } else if (has_white && !has_rgb && color_modes.count(esphome::light::ColorMode::COLD_WARM_WHITE) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::COLD_WARM_WHITE);
-              } else if (has_white && color_modes.count(esphome::light::ColorMode::RGB_WHITE) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::RGB_WHITE);
-              } else if (has_rgb && color_modes.count(esphome::light::ColorMode::RGB) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::RGB);
-              } else if (color_modes.count(esphome::light::ColorMode::WHITE) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::WHITE);
-              } else if (color_modes.count(esphome::light::ColorMode::BRIGHTNESS) > 0) {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::BRIGHTNESS);
+              if (has_white && has_rgb && color_modes.count(light::ColorMode::RGB_COLOR_TEMPERATURE) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::RGB_COLOR_TEMPERATURE);
+              } else if (has_white && has_rgb && color_modes.count(light::ColorMode::RGB_COLD_WARM_WHITE) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::RGB_COLD_WARM_WHITE);
+              } else if (has_white && has_rgb && color_modes.count(light::ColorMode::RGB_WHITE) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::RGB_WHITE);
+              } else if (has_white && !has_rgb && color_modes.count(light::ColorMode::COLOR_TEMPERATURE) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::COLOR_TEMPERATURE);
+              } else if (has_white && !has_rgb && color_modes.count(light::ColorMode::COLD_WARM_WHITE) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::COLD_WARM_WHITE);
+              } else if (has_rgb && color_modes.count(light::ColorMode::RGB) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::RGB);
+              } else if (color_modes.count(light::ColorMode::WHITE) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::WHITE);
+              } else if (color_modes.count(light::ColorMode::BRIGHTNESS) > 0) {
+                call.set_color_mode_if_supported(light::ColorMode::BRIGHTNESS);
               } else {
-                call.set_color_mode_if_supported(esphome::light::ColorMode::ON_OFF);
+                call.set_color_mode_if_supported(light::ColorMode::ON_OFF);
               }
 
-              call.set_red_if_supported(red);
-              call.set_green_if_supported(green);
-              call.set_blue_if_supported(blue);
-              call.set_cold_white_if_supported(coldwhite);
-              call.set_warm_white_if_supported(warmwhite);
+              if (has_rgb && color_modes.count(light::ColorMode::RGB) > 0) {
+                call.set_red_if_supported(red);
+                call.set_green_if_supported(green);
+                call.set_blue_if_supported(blue);
+              }
+
+              if (has_white && color_modes.count(light::ColorMode::COLOR_TEMPERATURE) > 0) {
+                call.set_color_temperature_if_supported((warm_white * obj->get_traits().get_max_mireds()) + (cold_white * obj->get_traits().get_min_mireds()));
+              } else if (has_white && color_modes.count(light::ColorMode::COLD_WARM_WHITE) > 0) {
+                call.set_cold_white_if_supported(cold_white);
+                call.set_warm_white_if_supported(warm_white);
+              } else if (has_white) {
+                call.set_white_if_supported(cold_white > warm_white ? cold_white : warm_white);
+              }
+
               call.perform();
+            }
+#endif
+            break;
+          case DGR_ITEM_STATUS:
+#ifdef USE_SWITCH
+            for (switch_::Switch *obj : this->switches_) {
+              SendDeviceGroupMessage(1, (DevGroupMessageType) (DGR_MSGTYP_UPDATE), DGR_ITEM_POWER, obj->state);
+            }
+#endif
+#ifdef USE_LIGHT
+            for (light::LightState *obj : this->lights_) {
+              float red = 0.0f, green = 0.0f, blue = 0.0f, cold_white = 0.0f, warm_white = 0.0f, brightness = 0.0f;
+              brightness = obj->remote_values.get_brightness();
+
+              if (obj->get_traits().supports_color_capability(light::ColorCapability::COLOR_TEMPERATURE)) {
+                float min_mireds = 0.0f, max_mireds = 0.0f, color_temperature = 0.0f;
+                color_temperature = obj->remote_values.get_color_temperature();
+                min_mireds = obj->get_traits().get_min_mireds();
+                max_mireds = obj->get_traits().get_max_mireds();
+                warm_white = (color_temperature - min_mireds) / (max_mireds - min_mireds);
+                cold_white = 1.0f - warm_white;
+              } else if (obj->get_traits().supports_color_capability(light::ColorCapability::COLD_WARM_WHITE)) {
+                cold_white = obj->remote_values.get_cold_white();
+                warm_white = obj->remote_values.get_warm_white();
+              } else if (obj->get_traits().supports_color_capability(light::ColorCapability::WHITE)) {
+                warm_white = cold_white = obj->remote_values.get_white();
+              }
+              
+              if (obj->get_traits().supports_color_capability(light::ColorCapability::RGB)) {
+                red = obj->remote_values.get_red();
+                green = obj->remote_values.get_green();
+                blue = obj->remote_values.get_blue();
+              }
+              
+              auto color_mode = obj->remote_values.get_color_mode();
+
+              if (color_mode & light::ColorCapability::RGB) {
+                cold_white = warm_white = 0;
+              } else if (color_mode & light::ColorCapability::WHITE
+                        || color_mode & light::ColorCapability::COLOR_TEMPERATURE
+                        || color_mode & light::ColorCapability::COLD_WARM_WHITE) {
+                red = green = blue = 0;
+              }
+              uint8_t light_channels[6] = {
+                (uint8_t)(red * 255),
+                (uint8_t)(green * 255),
+                (uint8_t)(blue * 255),
+                (uint8_t)(cold_white * 255),
+                (uint8_t)(warm_white * 255),
+                0
+              };
+              SendDeviceGroupMessage(1, (DevGroupMessageType) (DGR_MSGTYP_UPDATE_MORE_TO_COME),
+                                    DGR_ITEM_POWER, obj->remote_values.is_on());
+              // If the light is turning off, don't send channel data, as ESPHome will have 0 for all channels in shut-off mode.
+              if (obj->remote_values.is_on()) {
+                SendDeviceGroupMessage(1, (DevGroupMessageType) (DGR_MSGTYP_UPDATE_MORE_TO_COME),
+                                      DGR_ITEM_LIGHT_CHANNELS, light_channels);
+              }
+              SendDeviceGroupMessage(1, (DevGroupMessageType) (DGR_MSGTYP_UPDATE),
+                                    DGR_ITEM_LIGHT_BRI, (uint8_t)(brightness * 255));
             }
 #endif
             break;
@@ -570,7 +697,7 @@ void device_groups::SendReceiveDeviceGroupMessage(struct device_group *device_gr
 
 write_log:
   *log_ptr++ = 0;
-  ESP_LOGV(TAG, "%s", log_buffer);
+  ESP_LOGD(TAG, "%s", log_buffer);
 
   // If this is a received status request message, then if the requestor didn't just ack our
   // previous full status update, send a full status update.
@@ -714,7 +841,7 @@ bool device_groups::_SendDeviceGroupMessage(int32_t device, DevGroupMessageType 
     bool shared;
     uint8_t item;
     uint32_t mask;
-    uint32_t value;
+    uint32_t value = 0;
     uint8_t *value_ptr;
     uint8_t *first_item_ptr = message_ptr;
     struct item *item_ptr;
@@ -1062,7 +1189,11 @@ void device_groups::DeviceGroupStatus(uint8_t device_group_index) {
   }
 }
 
-static void static_multicast_listen_loop() {
+void device_groups::DeviceGroupsLoop(void) {
+  if (!device_groups_up || TasmotaGlobal.restart_flag)
+    return;
+
+#if defined(ESP8266)
   while (device_groups_udp.parsePacket()) {
     struct multicast_packet packet;
     int length = device_groups_udp.read(packet.payload, sizeof(packet.payload) - 1);
@@ -1074,15 +1205,9 @@ static void static_multicast_listen_loop() {
       received_packets.push_back(packet);
     }
   }
-}
 
-void device_groups::DeviceGroupsLoop(void) {
-  if (!device_groups_up || TasmotaGlobal.restart_flag)
-    return;
-
-  static_multicast_listen_loop();
   for (multicast_packet packet : received_packets) {
-    std::string identifier(std::string(kDeviceGroupMessage) + this->device_group_name_);
+    std::string identifier(std::string(kDeviceGroupMessage) + this->device_group_name_ + '\0');
     if (!strncmp_P((char *) packet.payload, identifier.c_str(), identifier.length())) {
       ProcessGroupMessageResult status = ProcessDeviceGroupMessage(packet);
       if (status != PROCESS_GROUP_MESSAGE_UNMATCHED) {
@@ -1093,7 +1218,7 @@ void device_groups::DeviceGroupsLoop(void) {
     } else {
       bool isRegistered = false;
       for (std::string registered_group_name : registered_group_names) {
-        std::string identifier_registered(std::string(kDeviceGroupMessage) + registered_group_name);
+        std::string identifier_registered(std::string(kDeviceGroupMessage) + registered_group_name + '\0');
         if (!strncmp_P((char *) packet.payload, identifier_registered.c_str(), identifier_registered.length())) {
           isRegistered = true;
           break;
@@ -1107,6 +1232,21 @@ void device_groups::DeviceGroupsLoop(void) {
       }
     }
   }
+#else
+  while (device_groups_udp.parsePacket()) {
+    struct multicast_packet packet;
+    int length = device_groups_udp.read(packet.payload, sizeof(packet.payload) - 1);
+    if (length > 0) {
+      packet.id = 0; // Not used.
+      packet.payload[length] = 0;
+      packet.length = length;
+      packet.remoteIP = device_groups_udp.remoteIP();
+      if (!strncmp_P((char *)packet.payload, kDeviceGroupMessage, sizeof(DEVICE_GROUP_MESSAGE) - 1)) {
+        ProcessDeviceGroupMessage(packet);
+      }
+    }
+  }
+#endif
 
   uint32_t now = millis();
 
@@ -1234,6 +1374,7 @@ bool device_groups::XdrvCall(uint8_t Function) {
 
 void device_groups::ExecuteCommandPower(uint32_t device, uint32_t state, uint32_t source) {
   power_t mask = 1 << (device - 1);  // Device to control
+  power_t old_power = TasmotaGlobal.power;
   if (state <= POWER_TOGGLE) {
     switch (state) {
       case POWER_OFF: {
@@ -1248,26 +1389,35 @@ void device_groups::ExecuteCommandPower(uint32_t device, uint32_t state, uint32_
     }
   }
 
+  if (TasmotaGlobal.power != old_power && SRC_REMOTE != source && SRC_RETRY != source) {
+    power_t dgr_power = TasmotaGlobal.power;
+    if (Settings->flag4.multiple_device_groups) {  // SetOption88 - Enable relays in separate device groups
+      dgr_power = (dgr_power >> (device - 1)) & 1;
+    }
+    SendDeviceGroupMessage(device, DGR_MSGTYP_UPDATE, DGR_ITEM_POWER, dgr_power);
+  }
+
   if (dgr_state < DGR_STATE_INITIALIZED) {
     return;
   }
 
+  if (SRC_REMOTE == source) {
 #ifdef USE_SWITCH
-  for (switch_::Switch *obj : this->switches_) {
-    if (TasmotaGlobal.power > 0) {
-      obj->turn_on();
-    } else {
-      obj->turn_off();
+    for (switch_::Switch *obj : this->switches_) {
+      if (TasmotaGlobal.power > 0) {
+        obj->turn_on();
+      } else {
+        obj->turn_off();
+      }
     }
-    obj->publish_state(TasmotaGlobal.power);
-  }
 #endif
 #ifdef USE_LIGHT
-  for (light::LightState *obj : this->lights_) {
-    auto call = TasmotaGlobal.power > 0 ? obj->turn_on() : obj->turn_off();
-    call.perform();
+    for (light::LightState *obj : this->lights_) {
+      auto call = TasmotaGlobal.power > 0 ? obj->turn_on() : obj->turn_off();
+      call.perform();
   }
 #endif
+  }
 }
 
 void device_groups::ExecuteCommand(const char *cmnd, uint32_t source) { return; }

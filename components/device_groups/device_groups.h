@@ -20,6 +20,7 @@
 #endif
 #ifdef USE_LIGHT
 #include "esphome/components/light/light_state.h"
+#include "esphome/components/light/color_mode.h"
 #endif
 
 namespace esphome {
@@ -253,10 +254,12 @@ struct multicast_packet {
   IPAddress remoteIP;
 };
 
+#if defined(ESP8266)
 static WiFiUDP device_groups_udp;
 static std::vector<multicast_packet> received_packets{};
 static std::vector<std::string> registered_group_names{};
 static uint32_t packetId = 0;
+#endif
 
 class device_groups : public Component {
  public:
@@ -271,7 +274,7 @@ class device_groups : public Component {
   void register_receive_mask(uint32_t receive_mask) { this->receive_mask_ = receive_mask; }
   void setup() override;
   void dump_config() override;
-  float get_setup_priority() const override { return setup_priority::HARDWARE; }
+  float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
   /// Send new values if they were updated.
   void loop() override;
@@ -305,6 +308,9 @@ class device_groups : public Component {
   std::vector<light::LightState *> lights_{};
 #endif
 
+#if !defined(ESP8266)
+  WiFiUDP device_groups_udp;
+#endif
   struct device_group *device_groups_;
   uint32_t next_check_time;
   bool device_groups_initialized = false;
@@ -319,6 +325,20 @@ class device_groups : public Component {
 
   uint8_t device_group_count = 0;
   bool first_device_group_is_local = true;
+
+#ifdef USE_LIGHT
+  void get_light_values(light::LightState *obj, bool &power_state, float &brightness, float &red, float &green, float &blue, float &cold_white, float &warm_white, esphome::light::ColorMode &color_mode);
+  void set_light_intial_values(light::LightState *obj);
+  bool previous_power_state = false;
+  float previous_brightness = 0.0f;
+  float previous_red = 0.0f;
+  float previous_green = 0.0f;
+  float previous_blue = 0.0f;
+  float previous_warm_white = 0.0f;
+  float previous_cold_white = 0.0f;
+  float previous_color_temperature = 0.0f;
+  esphome::light::ColorMode previous_color_mode = esphome::light::ColorMode::UNKNOWN;
+#endif
 };
 
 }  // namespace device_groups
