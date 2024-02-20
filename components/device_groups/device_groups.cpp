@@ -3,8 +3,12 @@
 #include "esphome/core/log.h"
 #include "esphome/components/network/ip_address.h"
 #include "esphome/components/network/util.h"
+#include "esphome/components/globals/globals_component.h"
+
+extern esphome::globals::GlobalsComponent<int> *dimmer_action; // Declare extern variable
 
 namespace esphome {
+
 namespace device_groups {
 
 static const char *const TAG = "dgr";
@@ -65,48 +69,9 @@ void device_groups::setup() {
     set_light_intial_values(obj);
 
     obj->add_new_remote_values_callback([this, obj]() {
-      bool power_state;
-      float brightness, red, green, blue, cold_white, warm_white;
-      esphome::light::ColorMode color_mode;
-
-      get_light_values(obj, power_state, brightness, red, green, blue, cold_white, warm_white, color_mode);
-
-      if (power_state != previous_power_state) {
-        ExecuteCommandPower(1, power_state, SRC_LIGHT);
-      }
-
-      if (red != previous_red
-          || green != previous_green
-          || blue != previous_blue
-          || warm_white != previous_warm_white
-          || cold_white != previous_cold_white
-      ) {
-        uint8_t light_channels[6] = {
-          (uint8_t)(red * 255),
-          (uint8_t)(green * 255),
-          (uint8_t)(blue * 255),
-          (uint8_t)(cold_white * 255),
-          (uint8_t)(warm_white * 255),
-          0
-        };
-
-        SendDeviceGroupMessage(1, (DevGroupMessageType) (DGR_MSGTYP_UPDATE),
-                              DGR_ITEM_LIGHT_CHANNELS, light_channels);
-      }
-      
-      if (brightness != previous_brightness) {
-        SendDeviceGroupMessage(1, (DevGroupMessageType) (DGR_MSGTYP_UPDATE + DGR_MSGTYPFLAG_WITH_LOCAL),
-                              DGR_ITEM_LIGHT_BRI, (uint8_t)(brightness * 255));
-      }
-
-      previous_power_state = power_state;
-      previous_brightness = brightness;
-      previous_red = red;
-      previous_green = green;
-      previous_blue = blue;
-      previous_cold_white = cold_white;
-      previous_warm_white = warm_white;
-      previous_color_mode = color_mode;
+      DevGroupMessageType flags = DGR_MSGTYPFLAG_WITH_LOCAL + (dimmer_action->value() == 0) ? DGR_MSGTYP_UPDATE : DGR_MSGTYP_UPDATE_MORE_TO_COME;
+      ESP_LOGD(TAG, "message, 0x%02x flags: 0x%04x, item: 0x%02x, value: 0x%02x", 0, flags, DGR_ITEM_LIGHT_BRI, (uint8_t) (obj->remote_values.get_brightness() * 255)); 
+      SendDeviceGroupMessage(0, flags, DGR_ITEM_LIGHT_BRI, (uint8_t) (obj->remote_values.get_brightness() * 255));
     });
   }
 #endif
